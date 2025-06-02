@@ -1,0 +1,69 @@
+# Use eclipse-temurin JDK image as base
+FROM eclipse-temurin:17-jdk-alpine
+
+# Define versions
+ENV MAVEN_VERSION=3.9.6
+ENV SONAR_SCANNER_VERSION=5.0.1.3006
+ENV MAVEN_HOME=/opt/maven
+ENV SONAR_SCANNER_HOME=/opt/sonar-scanner
+
+# Install minimal tools and download Maven & SonarQube in single layer
+RUN apk add --no-cache --virtual .build-deps wget unzip && \
+    apk add --no-cache \
+        curl \
+        busybox-extras \
+        zip \
+        unzip \
+        git \
+        openssh-client \
+        bash \
+        net-tools && \
+    # Download and install Maven
+    wget -q -O maven.tar.gz https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz && \
+    tar -xzf maven.tar.gz -C /opt && \
+    mv /opt/apache-maven-${MAVEN_VERSION} ${MAVEN_HOME} && \
+    # Download and install SonarQube Scanner
+    wget -q -O sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip && \
+    unzip -q sonar.zip -d /opt && \
+    mv /opt/sonar-scanner-${SONAR_SCANNER_VERSION}-linux ${SONAR_SCANNER_HOME} && \
+    # Remove SonarQube's bundled JRE to save space
+    rm -rf ${SONAR_SCANNER_HOME}/jre \
+           ${SONAR_SCANNER_HOME}/docs \
+           ${SONAR_SCANNER_HOME}/*.txt && \
+    # Clean up downloads and build dependencies
+    rm -f maven.tar.gz sonar.zip && \
+    apk del .build-deps && \
+    rm -rf /var/cache/apk/* && \
+    # Create maven cache directory
+    mkdir -p /root/.m2
+
+# Dynamically set JAVA_HOME and update PATH
+RUN export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+    echo "export JAVA_HOME=$JAVA_HOME" >> /etc/profile && \
+    echo "export PATH=\$JAVA_HOME/bin:\$PATH:${MAVEN_HOME}/bin:${SONAR_SCANNER_HOME}/bin" >> /etc/profile
+
+# Set environment variables for runtime
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${MAVEN_HOME}/bin:${SONAR_SCANNER_HOME}/bin:${PATH}"
+
+# Create non-root user
+RUN adduser -D -s /bin/bash gitlab-ci && \
+    mkdir -p /home/gitlab-ci/.m2 && \
+    chown -R gitlab-ci:gitlab-ci /home/gitlab-ci
+
+# Set working directory
+WORKDIR /builds
+
+# Verify installations with better error handling
+RUN echo "=== Environment Check ===" && \
+    echo "JAVA_HOME: $JAVA_HOME" && \
+    echo "Java executable: $(which java 2>/dev/null || echo 'Not found in PATH')" && \
+    echo "Real Java location: $(readlink -f $(which java) 2>/dev/null || echo 'Cannot determine')" && \
+    echo "=== Version Check ===" && \
+    java -version && \
+    mvn -version && \
+    echo "=== SonarQube Scanner Check ===" && \
+    ls -la ${SONAR_SCANNER_HOME}/bin/ && \
+    JAVA_HOME=$JAVA_HOME ${SONAR_SCANNER_HOME}/bin/sonar-scanner -v | head -1
+
+CMD ["/bin/bash", "-l"]
